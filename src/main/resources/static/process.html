@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepResearch 过程可视化</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel2: #1d2130; --border: #2a2f42;
+    --text: #d7dae3; --muted: #8b91a5; --accent: #5b8cff; --ok: #3fb27f; --warn: #d9a13f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.65 "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 120px; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .inputbar { display: flex; gap: 8px; margin-bottom: 20px; }
+  textarea { flex: 1; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font: inherit; resize: vertical; min-height: 64px; }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  button { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 0 22px; font: inherit; cursor: pointer; align-self: stretch; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .statusbar { display: flex; gap: 16px; color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; }
+  .dot.run { background: var(--accent); animation: pulse 1s infinite; }
+  .dot.done { background: var(--ok); }
+  .dot.err { background: #d95b5b; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .block { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .block .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .think { white-space: pre-wrap; word-break: break-word; }
+  .tool-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
+  .tool-card .head { display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: rgba(91,140,255,.15); color: var(--accent); }
+  .badge.task { background: rgba(63,178,127,.15); color: var(--ok); }
+  .badge.search { background: rgba(217,161,63,.15); color: var(--warn); }
+  .tool-card .title { font-weight: 600; }
+  .tool-card .state { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .tool-card .state.done { color: var(--ok); }
+  .tool-card .desc { margin-top: 6px; color: var(--text); }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details pre { margin-top: 6px; padding: 8px 10px; background: #12141c; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; color: #a8c7fa; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>DeepResearch 过程可视化</h1>
+  <div class="sub">实时展示主 Agent 思考流、子问题派发（task）与工具调用结果</div>
+  <div class="inputbar">
+    <textarea id="q" placeholder="输入研究问题，例如：调研2025年主流Java Agent开发框架"></textarea>
+    <button id="go" onclick="start()">开始研究</button>
+  </div>
+  <div class="statusbar">
+    <span><span class="dot" id="dot"></span><span id="stext">空闲</span></span>
+    <span id="timer"></span>
+    <span id="tokens"></span>
+  </div>
+  <div id="timeline"><div class="empty">提交问题后，这里会按时间顺序显示研究过程</div></div>
+</div>
+<script>
+const tl = document.getElementById('timeline');
+let currentText = null, sw = null, timerId = null;
+
+function setStatus(cls, text) {
+  document.getElementById('dot').className = 'dot ' + cls;
+  document.getElementById('stext').textContent = text;
+}
+
+function newTextBlock(label) {
+  const b = document.createElement('div');
+  b.className = 'block';
+  b.innerHTML = '<div class="label">' + label + '</div><div class="think"></div>';
+  tl.appendChild(b);
+  currentText = b.querySelector('.think');
+  return currentText;
+}
+
+function appendText(t) {
+  if (!currentText) newTextBlock('主 Agent');
+  currentText.textContent += t;
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function tryParse(s) { try { return JSON.parse(s); } catch (e) { return null; } }
+
+function makeToolCard(tc) {
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  const args = tryParse(tc.arguments) || {};
+  let badge = '', title = tc.name, desc = '';
+  if (tc.name === 'task') {
+    badge = '<span class="badge task">子 Agent</span>';
+    desc = args.description || '';
+    title = 'research-agent';
+  } else if (tc.name === 'bailian_web_search') {
+    badge = '<span class="badge search">联网搜索</span>';
+    desc = args.query || args.input || '';
+  } else if (tc.name === 'write_file') {
+    badge = '<span class="badge">写文件</span>';
+    desc = args.file_path || '';
+  } else {
+    badge = '<span class="badge">工具</span>';
+  }
+  card.innerHTML =
+    '<div class="head">' + badge + '<span class="title">' + esc(title) +
+    '</span><span class="state">执行中…</span></div>' +
+    (desc ? '<div class="desc">' + esc(desc).slice(0, 400) + '</div>' : '') +
+    '<details><summary>参数</summary><pre>' + esc(tc.arguments || '') + '</pre></details>' +
+    '<details class="res" style="display:none"><summary>结果</summary><pre></pre></details>';
+  tl.appendChild(card);
+  currentText = null; // 工具事件后新起文本块
+  window.scrollTo(0, document.body.scrollHeight);
+  return card;
+}
+
+function fillToolResult(r) {
+  const cards = tl.querySelectorAll('.tool-card');
+  for (const c of cards) {
+    const d = c.querySelector('details pre');
+    if (d && c._callId === r.id) {
+      const rd = tryParse(r.responseData);
+      c.querySelector('.state').textContent = '完成';
+      c.querySelector('.state').classList.add('done');
+      const det = c.querySelector('.res');
+      det.style.display = '';
+      det.querySelector('pre').textContent = (typeof rd === 'string' ? rd : JSON.stringify(rd, null, 1)).slice(0, 8000);
+      return;
+    }
+  }
+}
+
+function updateTokens(tu) {
+  if (!tu) return;
+  document.getElementById('tokens').textContent =
+    '最近调用 prompt=' + tu.promptTokens + ' completion=' + tu.completionTokens;
+}
+
+async function start() {
+  const q = document.getElementById('q').value.trim();
+  if (!q) return;
+  document.getElementById('go').disabled = true;
+  tl.innerHTML = '';
+  currentText = null;
+  setStatus('run', '研究中…');
+  sw = performance.now();
+  timerId = setInterval(() => {
+    document.getElementById('timer').textContent =
+      '耗时 ' + ((performance.now() - sw) / 1000).toFixed(0) + 's';
+  }, 1000);
+
+  const body = {
+    appName: 'research_agent',
+    threadId: 'ui-' + Date.now(),
+    userId: 'web',
+    newMessage: { messageType: 'user', content: q }
+  };
+  try {
+    const resp = await fetch('/run_sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5);
+        if (!payload || payload === '{}') continue;
+        const j = tryParse(payload);
+        if (!j || !j.message) continue;
+        const m = j.message;
+        if (m.messageType === 'assistant' && j.chunk) appendText(j.chunk);
+        if (m.toolCalls && m.toolCalls.length) {
+          for (const tc of m.toolCalls) {
+            const c = makeToolCard(tc);
+            c._callId = tc.id;
+          }
+        }
+        if (m.messageType === 'tool' && m.responses) {
+          for (const r of m.responses) fillToolResult(r);
+        }
+        if (j.tokenUsage) updateTokens(j.tokenUsage);
+      }
+    }
+    setStatus('done', '完成');
+  } catch (e) {
+    setStatus('err', '中断: ' + e.message);
+  } finally {
+    clearInterval(timerId);
+    document.getElementById('go').disabled = false;
+  }
+}
+</script>
+</body>
+</html>

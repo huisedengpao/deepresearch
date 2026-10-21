@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: DeepResearch
+  ai:
+    dashscope:
+      api-key: ${AI_DASHSCOPE_API_KEY}
+    mcp:
+      client:
+        # 百炼 MCP 广场「联网搜索」服务，国内可达；需先在控制台开通：bailian.console.aliyun.com -> MCP 广场 -> 联网搜索 -> 立即开通
+        enabled: true
+        streamable-http:
+          connections:
+            websearch:
+              # 注意：MCP SDK 用 URI.resolve 合并，endpoint 以 / 开头会整体替换 url 的 path，故完整路径放 endpoint
+              url: "https://dashscope.aliyuncs.com"
+              endpoint: "/api/v1/mcps/WebSearch/mcp"
+        request-timeout: 60000
+server:
+  port: 8080
