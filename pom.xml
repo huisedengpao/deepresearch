@@ -81,6 +81,13 @@
 			<artifactId>spring-ai-starter-mcp-client</artifactId>
 		</dependency>
 
+		<!-- OpenAI-compatible endpoint: DashScope's native API rejects single-string
+		     tool arguments (ls/glob) with HTTP 400, killing the whole session. -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-openai</artifactId>
+		</dependency>
+
 		<!-- RedisSaver (graph-core marks redisson optional; version matches graph-core) -->
 		<dependency>
 			<groupId>org.redisson</groupId>

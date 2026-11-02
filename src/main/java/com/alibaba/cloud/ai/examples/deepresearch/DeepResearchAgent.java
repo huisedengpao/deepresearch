@@ -15,9 +15,9 @@
  */
 package com.alibaba.cloud.ai.examples.deepresearch;
 
-import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
-import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
-import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.OpenAiApi;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.extension.interceptor.FilesystemInterceptor;
 import com.alibaba.cloud.ai.graph.agent.extension.interceptor.LargeResultEvictionInterceptor;
@@ -52,7 +52,10 @@ import static com.alibaba.cloud.ai.examples.deepresearch.DeepResearchAgent.Promp
 public class DeepResearchAgent {
 	private static final String BASE_AGENT_PROMPT =
 			"In order to complete the objective that the user asks of you, " +
-					"you have access to a number of standard tools.";
+					"you have access to a number of standard tools.\n\n" +
+					"**Tool argument format (CRITICAL):** tools with object parameters (`read_file`, " +
+					"`write_file`, `edit_file`, `grep`) must receive a JSON object, never a bare string. " +
+					"To inspect files, prefer `read_file` on a known path.";
 
 	private String systemPrompt;
 	// Model-tier routing: plus for the main ReAct loop and research sub-agents,
@@ -81,12 +84,17 @@ public class DeepResearchAgent {
 //	private ShellTool shellTool = ShellTool.builder().build();
 
 	public DeepResearchAgent() {
-		// Create DashScopeApi instance using the API key from environment variable
-		DashScopeApi dashScopeApi = DashScopeApi.builder().apiKey(System.getenv("AI_DASHSCOPE_API_KEY")).build();
-		// Create DashScope ChatModel instances for each tier
-		this.chatModel = buildModel(dashScopeApi, "qwen-plus");
-		this.flashModel = buildModel(dashScopeApi, "qwen-flash");
-		this.maxModel = buildModel(dashScopeApi, "qwen-max");
+		// OpenAI-compatible DashScope endpoint. The native DashScope API rejects tool
+		// arguments that are not JSON objects (ls/glob take a bare String), returning
+		// HTTP 400 and permanently poisoning the session; compatible-mode accepts them.
+		OpenAiApi openAiApi = OpenAiApi.builder()
+				.baseUrl("https://dashscope.aliyuncs.com/compatible-mode")
+				.apiKey(System.getenv("AI_DASHSCOPE_API_KEY"))
+				.build();
+		// Create chat model instances for each tier
+		this.chatModel = buildModel(openAiApi, "qwen-plus");
+		this.flashModel = buildModel(openAiApi, "qwen-flash");
+		this.maxModel = buildModel(openAiApi, "qwen-max");
 
 		// Connect to local Redis for checkpoint persistence.
 		Config redissonConfig = new Config();
@@ -121,17 +129,19 @@ public class DeepResearchAgent {
 				.messagesToKeep(6)
 				.build();
 
-		// Risk-tiered HITL policy: only destructive filesystem tools interrupt for
-		// human approval. bailian_web_search is deliberately NOT gated — gating it
-		// made every search interrupt, and each resume_sse resets the
-		// ToolCallLimitHook counter, so the research loop never converged.
+		// HITL disabled for filesystem tools: every write_file interrupt closed the
+		// SSE stream, and the client cannot reliably re-attach between parallel
+		// sub-agents, which left runs without findings/final_report on disk.
+		// Writes are confined to the local /workspace directory, so auto-approving
+		// them keeps a single /run_sse connection alive until the report is done.
 		this.humanInTheLoopHook = HumanInTheLoopHook.builder()
-				.approvalOn("write_file", "The agent wants to write a file to disk. Approve?")
-				.approvalOn("edit_file", "The agent wants to edit a file on disk. Approve?")
 				.build();
 
+		// Raised from 25 to 60: a full pass (question write + 5 parallel task
+		// dispatches + writer + critique + reviser, plus retries) exhausted the
+		// old limit before the writer stage could run.
 		this.toolCallLimitHook = ToolCallLimitHook.builder()
-				.runLimit(25)
+				.runLimit(60)
 				.build();
 
 		this.shellToolAgent = ShellToolAgentHook.builder().build();
@@ -152,6 +162,9 @@ public class DeepResearchAgent {
 						"how you want the report to be critiqued.")
 				.systemPrompt(subCritiquePrompt)
 				.model(model)
+				// Sub-agents build their own ReactAgent, so interceptors must be
+				// attached per spec or the ls/glob argument fix never runs here.
+				.interceptors(List.of(new StringArgToolCallInterceptor()))
 				.enableLoopingLog(true)
 				.build();
 	}
@@ -160,9 +173,10 @@ public class DeepResearchAgent {
 		return SubAgentSpec.builder()
 				.name("writer-agent")
 				.description("Dedicated report writer. Call ONCE after all research-agent tasks are " +
-						"complete. It reads question.txt and all findings-*.md files and writes " +
-						"final_report.md. Do not give it web-research instructions.")
+						"complete. It reads /workspace/question.txt and all /workspace/findings-*.md files and writes " +
+						"/workspace/final_report.md. Do not give it web-research instructions.")
 				.systemPrompt(subWriterPrompt)
+				.interceptors(List.of(new StringArgToolCallInterceptor()))
 				.enableLoopingLog(true)
 				.build();
 	}
@@ -171,17 +185,18 @@ public class DeepResearchAgent {
 		return SubAgentSpec.builder()
 				.name("reviser-agent")
 				.description("Dedicated report reviser. Call after critique-agent returns feedback. " +
-						"It edits final_report.md in place according to the critique text passed in " +
-						"the task description.")
+						"It reads /workspace/critique.md and edits /workspace/final_report.md in place." +
+						"")
 				.systemPrompt(subReviserPrompt)
+				.interceptors(List.of(new StringArgToolCallInterceptor()))
 				.enableLoopingLog(true)
 				.build();
 	}
 
-	private static ChatModel buildModel(DashScopeApi dashScopeApi, String modelName) {
-		return DashScopeChatModel.builder()
-				.dashScopeApi(dashScopeApi)
-				.defaultOptions(DashScopeChatOptions.builder().model(modelName).build())
+	private static ChatModel buildModel(OpenAiApi openAiApi, String modelName) {
+		return OpenAiChatModel.builder()
+				.openAiApi(openAiApi)
+				.defaultOptions(OpenAiChatOptions.builder().model(modelName).build())
 				.build();
 	}
 
@@ -193,6 +208,7 @@ public class DeepResearchAgent {
 						"in parallel for each sub-question.")
 				.systemPrompt(subResearchPrompt)
 				.tools(toolsFromMcp)
+				.interceptors(List.of(new StringArgToolCallInterceptor()))
 				.enableLoopingLog(true)
 				.build();
 	}
@@ -210,6 +226,10 @@ public class DeepResearchAgent {
 				.parallelToolExecution(true)
 				.interceptors(todoListInterceptor,
 						filesystemInterceptor,
+						// Must run before tool execution: rewrites ls/glob arguments
+						// into JSON string literals, otherwise DashScope rejects the
+						// request with HTTP 400.
+						new StringArgToolCallInterceptor(),
 						largeResultEvictionInterceptor,
 						patchToolCallsInterceptor,
 //						contextEditingInterceptor,
@@ -255,27 +275,38 @@ public class DeepResearchAgent {
 				sub-agents stage by stage. You NEVER write or edit the report yourself.
 
 				**Pipeline (strict order):**
-				1. Write the original user question to `question.txt` for reference.
-				2. Plan: break the topic into 3-5 specific, independent sub-questions.
+				1. Write the original user question to `/workspace/question.txt` for reference.
+				2. Plan: break the topic into 3-5 specific, independent sub-questions that all stay
+				   strictly inside the user's topic. Each sub-question must name the exact subjects being
+				   compared (e.g. `Spring AI Alibaba` and `LangChain4j`); never drift to unrelated
+				   frameworks or technologies.
 				3. Research: MANDATORY dispatch ALL sub-questions as separate `task` tool calls with
 				   subagent_type `research-agent` in ONE single response so they run in parallel.
-				   Never send just one task call per response. In each task description, assign a unique
-				   findings file (`findings-1.md`, `findings-2.md`, ...) and require the researcher to
-				   write its full findings there.
+				   Never send just one task call per response. Each `description` MUST be a short
+				   plain-ASCII phrase of at most 12 words naming the sub-question and its findings file,
+				   e.g. `LangChain4j orchestration design. Write /workspace/findings-2.md.`
+				   No long sentences, no extra clauses, no non-ASCII characters, no quotes.
 				4. Write: after ALL research tasks return, dispatch ONE `task` call with subagent_type
-				   `writer-agent`, telling it to read `question.txt` and all `findings-*.md` files and
-				   write the complete report to `final_report.md`.
+				   `writer-agent`, telling it to read `/workspace/question.txt` and all
+				   `/workspace/findings-*.md` files and write the complete report to
+				   `/workspace/final_report.md`.
 				5. Review: dispatch ONE `task` call with subagent_type `critique-agent` to critique
-				   `final_report.md`.
-				6. Revise: pass the critique feedback verbatim to ONE `task` call with subagent_type
-				   `reviser-agent`, which edits `final_report.md` in place.
+				   `/workspace/final_report.md`.
+				6. Revise: dispatch ONE `task` call with subagent_type `reviser-agent`, telling it to read
+				   `/workspace/critique.md` and edit `/workspace/final_report.md` in place. NEVER paste the
+				   critique text into the task description.
 				7. Repeat steps 5-6 at most ONE more time, then finish with a short conclusion.
+
+				**Task-call hygiene (CRITICAL):** the `task` tool arguments must be valid JSON. Keep every
+				`description` to ONE short line of plain text — no newlines, no double quotes, no backticks,
+				no code blocks, no pasted report or critique content. Put any long content in a file and tell
+				the sub-agent to read that file by name.
 
 				Keep your own messages short: plan, dispatch tasks, collect results, finish.
 				All report formatting rules live in the writer-agent prompt; do not duplicate them.
 
 				If the `writer-agent` task returns an exception or otherwise fails, do NOT write or edit
-				`final_report.md` yourself. Retry the writer task once; if it fails again, stop and report
+				`/workspace/final_report.md` yourself. Retry the writer task once; if it fails again, stop and report
 				the failure to the user instead of producing a fallback report.
 				""";
 
@@ -283,9 +314,27 @@ public class DeepResearchAgent {
 		public static String subResearchPrompt = """
 				You are a dedicated researcher. Your job is to conduct research based on the user's questions.
 
-				Conduct thorough research. The task description names a findings file (e.g. `findings-1.md`) —
-				write your complete, self-contained findings in Markdown to that file with `write_file`,
-				including every source URL you used.
+				Conduct thorough research. The task description names a findings file (e.g. `/workspace/findings-1.md`) —
+				write your complete, self-contained findings in Markdown to that file with `write_file`.
+
+				**Search (CRITICAL):** this sub-question is NOT answerable from memory. Call the web search tool
+				(`bailian_web_search`) at least TWICE with different, specific queries before writing anything.
+				Base every statement on the pages the search returns.
+
+				**Citations (CRITICAL):** after every factual claim put the URL you actually got back from the
+				search tool, in `[Title](URL)` form. End the findings file with a `## Sources` section listing
+				those URLs. If no search result supports a claim, write "not verified" next to it — never
+				state it as fact, and never invent a URL.
+
+				**Source quality (CRITICAL):** cite only official documentation, the project's GitHub
+				repository, or official examples. Do NOT cite CSDN, Zhihu, Medium, or personal blogs —
+				they routinely contain invented APIs and configuration keys. If a claim cannot be verified
+				from an official source, write "not verified" instead of guessing. Never invent class names,
+				methods, or configuration properties. Keep your research strictly inside the sub-question
+				you were given; do not drift to unrelated frameworks or technologies.
+
+				**Tool arguments (CRITICAL):** every tool call must pass a JSON object, never a bare string.
+				`write_file` takes `file_path` and `content` parameters.
 
 				Then reply to the orchestrator with a SHORT summary: the findings file path plus the key
 				points in a few lines. The full content lives in the findings file.
@@ -295,24 +344,30 @@ public class DeepResearchAgent {
 		public static String subCritiquePrompt = """
 				You are a dedicated editor. You are being tasked to critique a report.
 				
-				You can find the report at `final_report.md`.
-				You can find the question/topic for this report at `question.txt`.
+				You can find the report at `/workspace/final_report.md`.
+				You can find the question/topic for this report at `/workspace/question.txt`.
 				
 				The user may ask for specific areas to critique the report in.
-				Respond with a detailed critique of the report. Focus on areas that could be improved.
+				Write your detailed critique to `/workspace/critique.md` with `write_file`, then reply to the
+				orchestrator with a one-line confirmation. Long critique text must go in the file,
+				never in the task description.
 				
 				You can use the search tool to search for information, if that will help you critique the report.
 				
-				Do not write to the `final_report.md` yourself.
+				Do not write to the `/workspace/final_report.md` yourself.
 				
-				Things to check:
-				- Each section is appropriately named and structured
-				- The report is written in essay/textbook style - text heavy, not just bullet points
-				- The report is comprehensive without missing important details
-				- The article covers key areas ensuring overall understanding
-				- The article deeply analyzes causes, impacts, and trends with valuable insights
-				- The article closely follows the research topic and directly answers questions
-				- The article has clear structure, fluent language, and is easy to understand
+				Check the report for: correct section structure; every fact attributed to the RIGHT
+				framework (never place framework A's mechanisms under framework B); essay/textbook style
+				(text-heavy, not bullets); comprehensiveness; analytical depth; and direct relevance to
+				the question in `/workspace/question.txt`.
+
+				**Required output format (CRITICAL):** write a concrete critique, not an empty checklist.
+				For every problem, give three things together:
+				1. the section heading or a short quoted sentence where it occurs
+				2. why it is wrong (state the correct fact when you know it)
+				3. the concrete fix to apply
+				List at least 3 problems if any exist. Never output `- [ ]` items or bare headings only.
+				If the report is genuinely good, say so in one line and still list its 2-3 weakest points.
 				""";
 
 		// Sub-agent prompt for the dedicated report writer (pipeline stage 4)
@@ -320,12 +375,16 @@ public class DeepResearchAgent {
 				You are a dedicated report writer. Do NOT search the web; your only inputs are files.
 
 				**Tool-calling rule (CRITICAL):** Issue only ONE tool call per message. Never put two
-				tool calls (for example `ls` and `read_file`) in the same response — do them one by one.
+				tool calls in the same response — do them one by one.
+					Every tool argument must be a JSON object, never a bare string:
+					`read_file` takes a `file_path` parameter set to `/workspace/findings-1.md`.
 
-				1. Read `question.txt` to understand the research topic.
-				2. Use `ls` to list the workspace, then read every `findings-*.md` file.
+				1. Read `/workspace/question.txt` to understand the research topic.
+				2. Read the findings files with `read_file`: `/workspace/findings-1.md`, `/workspace/findings-2.md`,
+				   `/workspace/findings-3.md`, `/workspace/findings-4.md`, `/workspace/findings-5.md`.
+				   Do NOT call `ls`. Skip any findings file that does not exist and keep going.
 				3. Synthesize ALL findings into one polished Markdown report and write it to
-				   `final_report.md` with `write_file`.
+				   `/workspace/final_report.md` with `write_file`.
 
 				**Report Format Requirements:**
 				- CRITICAL: Write in the SAME language as the user's question!
@@ -337,6 +396,10 @@ public class DeepResearchAgent {
 				- End with a "### Sources" section listing all references
 
 				**Citation Rules:**
+				- Never invent a URL. Copy only URLs that literally appear in the findings files. If a claim
+				  has no URL behind it, mark it "not verified" and leave it out of the Sources list. If no
+				  findings file contains any URL, write the Sources section as one line saying that no
+				  verifiable sources were available.
 				- Assign each unique URL a single citation number [1], [2], etc.
 				- Number sources sequentially without gaps in the final list
 				- Each source should be a separate list item
@@ -348,17 +411,16 @@ public class DeepResearchAgent {
 				- Overview/Summary: intro → concept 1 → concept 2 → ... → conclusion
 				- Analysis: thesis → evidence → analysis → conclusion
 
-				When done, reply with a one-line confirmation that final_report.md was written.
+				When done, reply with a one-line confirmation that /workspace/final_report.md was written.
 				""";
 
 		// Sub-agent prompt for the dedicated reviser (pipeline stage 6)
 		public static String subReviserPrompt = """
-				You are a dedicated editor-reviser. The critique feedback for the report is included in
-				your task description.
+				You are a dedicated editor-reviser. The critique feedback is in `/workspace/critique.md`.
 
-				1. Read `final_report.md` and `question.txt`.
+				1. Read `/workspace/critique.md`, `/workspace/final_report.md` and `/workspace/question.txt`.
 				2. Apply the critique: fix structure, completeness, analysis depth and citations.
-				   Use `edit_file` to revise `final_report.md` in place.
+				   Use `edit_file` to revise `/workspace/final_report.md` in place.
 				3. Do NOT run new web research unless the critique points out a factual error;
 				   your job is revising the existing text.
 
