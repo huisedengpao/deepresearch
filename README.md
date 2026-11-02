@@ -63,6 +63,25 @@ mvn spring-boot:run
 - 「调研 Spring AI Alibaba 的核心架构设计」
 - 「对比 Claude Code 与 GitHub Copilot 的技术实现」
 
+## 系统化评测集（质量门禁）
+
+把「单变量对照」升级为可自动化的报告质量评测，补上「无系统评测」的短板。
+
+- **数据集**：`src/main/resources/evals/dataset.jsonl`，每行一条
+  `{"id","question","mustInclude":[...],"mustNotInclude":[...],"minSources":n}`
+- **指标定义**（以「事实点」为判定单元）：TP=命中的必需事实点，FN=遗漏的事实点，FP=出现的禁止断言（幻觉）；
+  `Recall = TP/(TP+FN)`，`Precision = TP/(TP+FP)`，另校验引用数是否达到 `minSources`
+- **打分器**：`eval/EvalRunner`，提供 `loadCases` / `score` / `aggregate`，可对任意报告文本打分
+- **门禁**：`EvalRunnerTest` 断言 recall/precision ≥ 0.95（CI 中随 `mvn test` 执行）；
+  命令行 `EvalRunner <dataset.jsonl> <reportsDir>` 在低于 `-Deval.threshold`（默认 0.80）时以非 0 退出，可直接接 CI
+- **LLM-as-judge（开放式题）**：`eval/LlmJudge` 按 `judgeRubric` 对报告打 0~1 分，用于「对比/分析」这类无法用事实点匹配的题；
+  需配置 `AI_DASHSCOPE_API_KEY`（默认 qwen-plus，逐项核对）。CLI 加 `-Djudge=true` 即切换为 judge 模式：
+  `EvalRunner <dataset.jsonl> <reportsDir> -Djudge=true`
+- **现状**：已收录 26 条评测题（24 条事实题 + 2 条开放式复杂题），5 条配 fixture 报告用于流水线自检；
+  judge 正/负样本对照已跑通（好报告 0.75、真 agent 产物 0.25、劣质报告 0.00），可区分质量。
+- **局限**：事实点用子串匹配，召回有限且依赖报告语言与题型一致；judge 存在分数抖动（同一好报告 flash=1.00、
+  plus+严格 prompt=0.75），正式使用需多次取样取均值并按人工标注校准；评测集仍需扩充至 500+ 条。
+
 ## 已知局限与 Roadmap
 
 - [ ] **系统化评测集**：当前仅能以墙钟耗时/引用数做粗粒度对照。计划构建 500–800 条标注评测集（每条锚定明文规则条款、含对抗变体、双人标注计算 kappa 一致性）+ 自动评测 runner（FP/FN/Precision/Recall/F1）+ CI 评测门禁（prompt 变更导致指标回退即拦截）。

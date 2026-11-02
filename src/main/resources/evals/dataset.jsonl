@@ -1,0 +1,26 @@
+{"id":"mqtt-port","question":"MQTT 协议默认使用的 TCP 端口号是多少？","mustInclude":["1883"],"mustNotInclude":["1884"],"minSources":1}
+{"id":"springboot3-jakarta","question":"Spring Boot 3.0 相比 2.x 最关键的底层迁移是什么？","mustInclude":["Jakarta EE"],"mustNotInclude":[],"minSources":1}
+{"id":"http-429","question":"HTTP 状态码 429 表示什么含义？","mustInclude":["429"],"mustNotInclude":[],"minSources":1}
+{"id":"sql-acid","question":"关系型数据库事务的 ACID 四个特性分别是什么？","mustInclude":["原子性","一致性","隔离性","持久性"],"mustNotInclude":[],"minSources":1}
+{"id":"redis-zset","question":"Redis 的 ZSet（有序集合）适合解决什么场景？","mustInclude":["ZSet"],"mustNotInclude":[],"minSources":1}
+{"id":"kafka-port","question":"Kafka 的 Broker 默认监听端口是多少？","mustInclude":["9092"],"mustNotInclude":[],"minSources":1}
+{"id":"redis-port","question":"Redis 服务默认监听端口是多少？","mustInclude":["6379"],"mustNotInclude":[],"minSources":1}
+{"id":"mysql-port","question":"MySQL 服务默认监听端口是多少？","mustInclude":["3306"],"mustNotInclude":[],"minSources":1}
+{"id":"https-port","question":"HTTPS 默认使用哪个端口？","mustInclude":["443"],"mustNotInclude":[],"minSources":1}
+{"id":"docker-vs-vm","question":"Docker 容器与传统虚拟机在资源隔离机制上的核心区别是什么？","mustInclude":["内核"],"mustNotInclude":[],"minSources":1}
+{"id":"cap-theorem","question":"CAP 定理的核心结论是什么？","mustInclude":["一致性","可用性","分区容错"],"mustNotInclude":[],"minSources":1}
+{"id":"base-theory","question":"BASE 理论包含哪三个要素？","mustInclude":["基本可用","软状态","最终一致"],"mustNotInclude":[],"minSources":1}
+{"id":"http2-multiplex","question":"HTTP/2 相比 HTTP/1.1 最关键的传输层改进是什么？","mustInclude":["多路复用"],"mustNotInclude":[],"minSources":1}
+{"id":"jwt-structure","question":"JWT（JSON Web Token）由哪三部分组成？","mustInclude":["Header","Payload","Signature"],"mustNotInclude":[],"minSources":1}
+{"id":"oauth2-code","question":"OAuth 2.0 授权码模式的核心流程是什么？","mustInclude":["授权码","令牌"],"mustNotInclude":[],"minSources":1}
+{"id":"mcp-jsonrpc","question":"Model Context Protocol（MCP）基于哪种消息通信协议？","mustInclude":["JSON-RPC"],"mustNotInclude":[],"minSources":1}
+{"id":"react-framework","question":"ReAct 智能体范式的核心思想是什么？","mustInclude":["推理","工具"],"mustNotInclude":[],"minSources":1}
+{"id":"rag-pipeline","question":"RAG（检索增强生成）的完整流程包含哪些关键环节？","mustInclude":["检索","生成","向量"],"mustNotInclude":[],"minSources":1}
+{"id":"rabbitmq-kafka","question":"RabbitMQ 与 Kafka 在消息模型上的主要区别是什么？","mustInclude":["队列","日志"],"mustNotInclude":[],"minSources":1}
+{"id":"k8s-pod","question":"Kubernetes 中最小的可调度单元是什么？","mustInclude":["Pod"],"mustNotInclude":[],"minSources":1}
+{"id":"springboot3-java17","question":"Spring Boot 3.x 要求的最低 Java 版本是多少？","mustInclude":["17"],"mustNotInclude":[],"minSources":1}
+{"id":"java17-features","question":"Java 17 引入了哪些重要的语言新特性？","mustInclude":["record","sealed"],"mustNotInclude":[],"minSources":1}
+{"id":"mysql-innodb-bplus","question":"MySQL InnoDB 为什么选择 B+ 树而不是 B 树作为索引结构？","mustInclude":["B+"],"mustNotInclude":[],"minSources":1}
+{"id":"redis-persistence","question":"Redis 提供哪两种主要的持久化机制？","mustInclude":["RDB","AOF"],"mustNotInclude":[],"minSources":1}
+{"id":"compare-spring-ai-alibaba-langchain4j","question":"对比 Spring AI Alibaba 与 LangChain4j 在 Agent 编排上的设计差异。","mustInclude":[],"mustNotInclude":[],"minSources":1,"judgeRubric":"评分需覆盖：1) 两者的编排抽象（如 Graph/ReactAgent 与 Chain/AiServices）；2) 至少 2 处具体设计差异（如状态图 vs 链式、持久化粒度）；3) 适用场景结论；4) 引用来源。四项全有得满分，缺一项扣 0.25。"}
+{"id":"rag-hybrid-retrieval","question":"构建 RAG 系统时，向量检索与关键词检索（BM25）各自的优劣及混合策略。","mustInclude":[],"mustNotInclude":[],"minSources":1,"judgeRubric":"评分需覆盖：1) 向量检索的优劣；2) BM25 的优劣；3) 混合检索/融合策略（如 RRF 或 rerank）；4) 适用场景结论。四项全有得满分，缺一项扣 0.25。"}
