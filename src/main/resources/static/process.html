@@ -61,6 +61,8 @@
 <script>
 const tl = document.getElementById('timeline');
 let currentText = null, sw = null, timerId = null;
+let threadId = null;        // run_sse / resume_sse 必须同一 threadId，才能从中断点续跑
+let awaitingApproval = false;
 
 function setStatus(cls, text) {
   document.getElementById('dot').className = 'dot ' + cls;
@@ -138,22 +140,35 @@ function updateTokens(tu) {
     '最近调用 prompt=' + tu.promptTokens + ' completion=' + tu.completionTokens;
 }
 
+function startTimer() {
+  clearInterval(timerId);
+  timerId = setInterval(() => {
+    document.getElementById('timer').textContent =
+      '耗时 ' + ((performance.now() - sw) / 1000).toFixed(0) + 's';
+  }, 1000);
+}
+
+function stopTimer() {
+  clearInterval(timerId);
+  document.getElementById('timer').textContent =
+    '耗时 ' + ((performance.now() - sw) / 1000).toFixed(0) + 's';
+}
+
 async function start() {
   const q = document.getElementById('q').value.trim();
   if (!q) return;
   document.getElementById('go').disabled = true;
   tl.innerHTML = '';
   currentText = null;
+  awaitingApproval = false;
   setStatus('run', '研究中…');
   sw = performance.now();
-  timerId = setInterval(() => {
-    document.getElementById('timer').textContent =
-      '耗时 ' + ((performance.now() - sw) / 1000).toFixed(0) + 's';
-  }, 1000);
+  startTimer();
 
+  threadId = 'ui-' + Date.now();
   const body = {
     appName: 'research_agent',
-    threadId: 'ui-' + Date.now(),
+    threadId: threadId,
     userId: 'web',
     newMessage: { messageType: 'user', content: q }
   };
@@ -163,42 +178,104 @@ async function start() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5);
-        if (!payload || payload === '{}') continue;
-        const j = tryParse(payload);
-        if (!j || !j.message) continue;
-        const m = j.message;
-        if (m.messageType === 'assistant' && j.chunk) appendText(j.chunk);
-        if (m.toolCalls && m.toolCalls.length) {
-          for (const tc of m.toolCalls) {
-            const c = makeToolCard(tc);
-            c._callId = tc.id;
-          }
-        }
-        if (m.messageType === 'tool' && m.responses) {
-          for (const r of m.responses) fillToolResult(r);
-        }
-        if (j.tokenUsage) updateTokens(j.tokenUsage);
-      }
-    }
-    setStatus('done', '完成');
+    await readStream(resp);
   } catch (e) {
     setStatus('err', '中断: ' + e.message);
   } finally {
-    clearInterval(timerId);
-    document.getElementById('go').disabled = false;
+    finishRun();
+  }
+}
+
+function finishRun() {
+  if (!awaitingApproval) {
+    stopTimer();
+    setStatus('done', '完成');
+  }
+  document.getElementById('go').disabled = false;
+}
+
+// 消费 SSE 流。HITL 中断时流会结束，需人工批准后通过 /resume_sse 续跑。
+async function readStream(resp) {
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5);
+      if (!payload || payload === '{}') continue;
+      const j = tryParse(payload);
+      if (!j || !j.message) continue;
+      const m = j.message;
+      if (m.messageType === 'assistant' && j.chunk) appendText(j.chunk);
+      if (m.toolCalls && m.toolCalls.length) {
+        for (const tc of m.toolCalls) {
+          const c = makeToolCard(tc);
+          c._callId = tc.id;
+        }
+      }
+      if (m.messageType === 'tool' && m.responses) {
+        for (const r of m.responses) fillToolResult(r);
+      }
+      if (m.messageType === 'tool-confirm' && m.toolFeedback) renderConfirm(m.toolFeedback);
+      if (j.tokenUsage) updateTokens(j.tokenUsage);
+    }
+  }
+}
+
+// 审批卡片：只读检索已自动放行，这里只会收到写操作类工具
+function renderConfirm(feedbacks) {
+  awaitingApproval = true;
+  setStatus('run', '等待审批…');
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  const items = feedbacks.map(f => {
+    const args = tryParse(f.arguments) || {};
+    return '<div class="desc">' + esc(f.name) + ' → ' + esc(args.file_path || '') + '</div>';
+  }).join('');
+  card.innerHTML =
+    '<div class="head"><span class="badge">需审批</span>' +
+    '<span class="title">写操作待批准</span></div>' + items +
+    '<div style="margin-top:8px;display:flex;gap:8px">' +
+    '<button data-r="APPROVED">批准</button>' +
+    '<button data-r="REJECTED" style="background:#3a3f52">拒绝</button></div>';
+  card.querySelectorAll('button').forEach(b => {
+    b.onclick = () => resume(feedbacks, b.dataset.r, card);
+  });
+  tl.appendChild(card);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+async function resume(feedbacks, result, card) {
+  card.querySelectorAll('button').forEach(b => b.disabled = true);
+  awaitingApproval = false;
+  setStatus('run', '继续执行…');
+  startTimer();
+  const toolFeedbacks = feedbacks.map(f => ({
+    id: f.id, name: f.name, arguments: f.arguments, result: result
+  }));
+  try {
+    const resp = await fetch('/resume_sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        appName: 'research_agent',
+        threadId: threadId,
+        userId: 'web',
+        toolFeedbacks: toolFeedbacks
+      })
+    });
+    await readStream(resp);
+  } catch (e) {
+    setStatus('err', '中断: ' + e.message);
+  } finally {
+    finishRun();
   }
 }
 </script>
